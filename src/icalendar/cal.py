@@ -9,9 +9,11 @@ from icalendar.caselessdict import CaselessDict
 from icalendar.parser import Contentline
 from icalendar.parser import Contentlines
 from icalendar.parser import Parameters
+from icalendar.parser import escape_char
 from icalendar.parser import q_join
 from icalendar.parser import q_split
 from icalendar.parser_tools import DEFAULT_ENCODING
+from icalendar.parser_tools import to_unicode
 from icalendar.prop import TypesFactory
 from icalendar.prop import vText, vDDDLists
 
@@ -51,6 +53,7 @@ INLINE = CaselessDict({
 
 _marker = []
 
+NEWLINE_FIX_NAMES = (u'DESCRIPTION')
 
 class Component(CaselessDict):
     """Component is the base object for calendar, Event and the other
@@ -300,21 +303,39 @@ class Component(CaselessDict):
         """
         stack = []  # a stack of components
         comps = []
+        previous_line = None
         for line in Contentlines.from_ical(st):  # raw parsing
             if not line:
                 continue
 
             try:
                 name, params, vals = line.parts()
-            except ValueError:
+                previous_line = line
+            except ValueError as err:
                 # if unable to parse a line within a component
                 # that ignores exceptions, mark the component
                 # as broken and skip the line. otherwise raise.
-                component = stack[-1] if stack else None
-                if not component or not component.ignore_exceptions:
-                    raise
-                component.is_broken = True
-                continue
+                try:
+                    if previous_line and name in NEWLINE_FIX_NAMES:
+                        try:
+                            #Try to generate line from last name key (fix malformed line breaks)
+                            new_line = Contentline.from_ical(
+                                previous_line + escape_char('\n') + line)
+                            name, params, vals = new_line.parts()
+                            component = stack[-1]
+                            component.pop(name)
+                            previous_line = new_line
+                        except:
+                            raise
+                    else:
+                        raise
+                except ValueError as err: 
+                    component = stack[-1] if stack else None
+                    if not component or not component.ignore_exceptions:
+                        raise
+                    component.is_broken = True
+                    print "Broken: " + str(component)
+                    continue
 
             uname = name.upper()
             # check for start of component
@@ -362,9 +383,14 @@ class Component(CaselessDict):
             raise ValueError('Found multiple components where '
                              'only one is allowed: {st!r}'.format(**locals()))
         if len(comps) < 1:
-            raise ValueError('Found no components where '
-                             'exactly one is required: '
-                             '{st!r}'.format(**locals()))
+            #Fix missing END:VCALENDAR flag problem
+            if len(stack)==1 and stack[-1].name == u'VCALENDAR':
+                component = stack.pop()
+                comps.append(component)
+            else:
+                raise ValueError('Found no components where '
+                                 'exactly one is required: '
+                                 '{st!r}'.format(**locals()))
         return comps[0]
 
     def content_line(self, name, value, sorted=True):
